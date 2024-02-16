@@ -1,0 +1,145 @@
+services:
+  reverse-proxy:
+    image: traefik:v2.10
+    container_name: fuwai-traefik
+    command:
+      # - --api.insecure=true
+      - --api.dashboard=true
+      - --providers.docker
+      - --providers.docker.exposedbydefault=false
+      - --metrics.prometheus=true
+      - --metrics.prometheus.buckets=0.1,0.3,1.2,5.0
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --log.level=DEBUG
+    ports:
+      - "80:80"
+      - "443:443"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.traefik-dashboard.rule=Host(`${TRAEFIK_DOMAIN}`)
+      - traefik.http.routers.traefik-dashboard.service=api@internal
+      - traefik.http.routers.traefik-dashboard.entrypoints=websecure
+      - traefik.http.routers.traefik-dashboard.tls=true
+      - traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_BASIC_AUTH}
+      - traefik.http.middlewares.traefik-auth.basicauth.removeheader=true
+      - traefik.http.routers.traefik-dashboard.middlewares=traefik-auth
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - telemetry
+      - backend
+      - frontend
+
+  reverse-proxy-telemetry:
+    image: prom/prometheus
+    container_name: fuwai-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.prometheus.rule=Host(`${PROMETHEUS_DOMAIN}`)
+      - traefik.http.routers.prometheus.entrypoints=websecure
+      - traefik.http.routers.prometheus.tls=true
+      - traefik.http.routers.prometheus.middlewares=traefik-auth
+      - traefik.http.services.prometheus.loadbalancer.server.port=9090
+    volumes:
+      - ./configuration/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    networks:
+      - telemetry
+
+  grafana:
+    image: grafana/grafana
+    container_name: fuwai-grafana
+    environment:
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.grafana.rule=Host(`${GRAFANA_DOMAIN}`)
+      # - traefik.http.routers.grafana.middlewares=traefik-auth
+      - traefik.http.routers.grafana.entrypoints=websecure
+      - traefik.http.routers.grafana.tls=true
+      - traefik.http.services.grafana.loadbalancer.server.port=3000
+    volumes:
+      - ./configuration/grafana/provisioning:/etc/grafana/provisioning
+      - ./configuration/grafana/grafana.ini:/etc/grafana/grafana.ini
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - reverse-proxy-telemetry
+    networks:
+      - telemetry
+
+  api:
+    image: dazorn/fuwai-api
+    container_name: fuwai-api
+    environment:
+      - MONGODB_URL
+    ports:
+      - "3001:80"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.api.rule=Host(`${API_DOMAIN}`)
+      - traefik.http.routers.api.entrypoints=websecure
+      - traefik.http.routers.api.tls=true
+      - traefik.http.services.api.loadbalancer.server.port=80
+    depends_on:
+      - mongodb
+    networks:
+      - database
+      - backend
+
+  admin:
+    image: dazorn/fuwai-admin
+    container_name: fuwai-admin
+    ports:
+      - "3000:3000"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.admin.rule=Host(`${ADMIN_DOMAIN}`)
+      - traefik.http.routers.admin.entrypoints=websecure
+      - traefik.http.routers.admin.tls=true
+      - traefik.http.services.admin.loadbalancer.server.port=3000
+    depends_on:
+      - api
+    networks:
+      - frontend
+      - backend
+
+  scraper:
+    image: dazorn/fuwai-scraper
+    container_name: fuwai-scraper
+    environment:
+      - MONGODB_URL
+    depends_on:
+      - mongodb
+    networks:
+      - database
+
+  mongodb:
+    image: mongo
+    container_name: fuwai-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/mongodb
+    networks:
+      - database
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  mongodb_data:
+
+networks:
+  database:
+    driver: bridge
+  telemetry:
+    name: telemetry
+  backend:
+    name: backend
+  frontend:
+    name: frontend
