@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: "fuwai-traefik"
+
+rule_files:
+  - "alert.rules"
+
+scrape_configs:
+  - job_name: "prometheus"
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "traefik"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["reverse-proxy:8080"]
